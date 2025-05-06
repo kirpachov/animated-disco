@@ -14,10 +14,10 @@ app = FastAPI()
 
 # Configurazione ottimizzata
 UPLOAD_DIR = "uploads"
-MAX_FILE_SIZE = 1024 * 1024 * 20  # 20MB per file
-MAX_TOTAL_SIZE = 1024 * 1024 * 200 * 1024  # 2GB totale
-ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.heic', '.heif'}
-MAX_WORKERS = 4  # Thread per il processing parallelo
+MAX_FILE_SIZE = 1024 * 1024 * 20 * 100
+MAX_TOTAL_SIZE = 1024 * 1024 * 200 * 1024 * 10
+ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.heic', '.heif', ".cr2"}
+MAX_WORKERS = 10  # Thread per il processing parallelo
 
 # Crea la cartella uploads se non esiste
 Path(UPLOAD_DIR).mkdir(exist_ok=True)
@@ -153,11 +153,20 @@ async def view_gallery():
     # Ottieni lista file nella cartella uploads
     image_files = []
     for file in os.listdir(UPLOAD_DIR):
-        if file.lower().endswith(('.png', '.jpg', '.jpeg', '.heic', '.heif')):
-            image_files.append(file)
+        if file.lower().endswith(('.png', '.jpg', '.jpeg', '.heic', '.heif', ".cr2")):
+            file_info = {
+                "name": file,
+                "url": f"/uploads/{file}",
+                "size": os.path.getsize(os.path.join(UPLOAD_DIR, file)),
+                "date": os.path.getmtime(os.path.join(UPLOAD_DIR, file))
+            }
+            image_files.append(file_info)
     
     # Ordina per data di creazione (dal più recente)
-    image_files.sort(key=lambda x: os.path.getmtime(os.path.join(UPLOAD_DIR, x)), reverse=True)
+    image_files.sort(key=lambda x: x["date"], reverse=True)
+
+    photo_count = len(image_files)
+    count_text = f" ({photo_count})" if photo_count > 0 else ""
     
     # Genera HTML
     gallery_html = """
@@ -200,7 +209,7 @@ async def view_gallery():
                 transition: transform 0.2s;
             }
             .photo:active {
-                transform: scale(0.95);
+                transform: scale(0.98);
             }
             .footer {
                 position: fixed;
@@ -227,6 +236,52 @@ async def view_gallery():
                 padding: 40px 0;
                 color: #888;
             }
+            .dialog-overlay {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(0,0,0,0.5);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 1000;
+                opacity: 0;
+                pointer-events: none;
+                transition: opacity 0.3s;
+            }
+            .dialog {
+                background: white;
+                border-radius: 14px;
+                padding: 20px;
+                width: 80%;
+                max-width: 300px;
+                text-align: center;
+            }
+            .dialog-title {
+                font-weight: 600;
+                margin-bottom: 15px;
+            }
+            .dialog-buttons {
+                display: flex;
+                justify-content: space-between;
+                margin-top: 20px;
+            }
+            .dialog-button {
+                padding: 10px 20px;
+                border-radius: 10px;
+                border: none;
+                font-weight: 500;
+            }
+            .dialog-cancel {
+                background: #e5e5ea;
+                color: #007aff;
+            }
+            .dialog-confirm {
+                background: #ff3b30;
+                color: white;
+            }
             @media (min-width: 768px) {
                 .gallery {
                     grid-template-columns: repeat(3, 1fr);
@@ -236,7 +291,17 @@ async def view_gallery():
     </head>
     <body>
         <div class="header">
-            <h2>Le tue foto</h2>
+            <h2>Le tue foto """ + count_text + """</h2>
+        </div>
+        
+        <div class="dialog-overlay" id="deleteDialog">
+            <div class="dialog">
+                <div class="dialog-title">Eliminare questa foto?</div>
+                <div class="dialog-buttons">
+                    <button class="dialog-button dialog-cancel" id="cancelDelete">Annulla</button>
+                    <button class="dialog-button dialog-confirm" id="confirmDelete">Elimina</button>
+                </div>
+            </div>
         </div>
         
         <div class="gallery">
@@ -251,9 +316,11 @@ async def view_gallery():
     else:
         for img in image_files:
             gallery_html += f"""
-            <a href="/uploads/{img}" target="_blank">
-                <img src="/uploads/{img}" class="photo" loading="lazy">
-            </a>
+            <img src="{img['url']}" class="photo" loading="lazy" 
+                 data-filename="{img['name']}"
+                 ontouchstart="startLongPress(this)" 
+                 ontouchend="cancelLongPress()" 
+                 onclick="preventDefaultAction(event)">
             """
     
     gallery_html += """
@@ -264,18 +331,101 @@ async def view_gallery():
         </div>
         
         <script>
-            // Infinite scroll
-            let loading = false;
-            window.addEventListener('scroll', function() {
-                if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 500 && !loading) {
-                    loading = true;
-                    // Qui potresti aggiungere caricamento lazy di più immagini
-                    // se implementi la paginazione lato server
+            let longPressTimer;
+            let currentPhotoToDelete;
+            
+            function startLongPress(element) {
+                currentPhotoToDelete = element;
+                longPressTimer = setTimeout(() => {
+                    showDeleteDialog();
+                }, 800); // 800ms per il long press
+            }
+            
+            function cancelLongPress() {
+                if (longPressTimer) {
+                    clearTimeout(longPressTimer);
+                }
+            }
+            
+            function preventDefaultAction(event) {
+                // Previene il click normale dopo il long press
+                if (event.cancelable) {
+                    event.preventDefault();
+                }
+                event.stopPropagation();
+            }
+            
+            function showDeleteDialog() {
+                const dialog = document.getElementById('deleteDialog');
+                dialog.style.opacity = '1';
+                dialog.style.pointerEvents = 'auto';
+            }
+            
+            function hideDeleteDialog() {
+                const dialog = document.getElementById('deleteDialog');
+                dialog.style.opacity = '0';
+                dialog.style.pointerEvents = 'none';
+            }
+            
+            async function deletePhoto() {
+                if (!currentPhotoToDelete) return;
+                
+                const filename = currentPhotoToDelete.getAttribute('data-filename');
+                try {
+                    const response = await fetch(`/delete/${filename}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    const result = await response.json();
+                    if (result.status === 'success') {
+                        // Rimuovi l'immagine dal DOM
+                        currentPhotoToDelete.remove();
+                    }
+                } catch (error) {
+                    console.error('Errore durante eliminazione:', error);
+                } finally {
+                    hideDeleteDialog();
+                    currentPhotoToDelete = null;
+                }
+            }
+            
+            // Setup dialog buttons
+            document.getElementById('cancelDelete').addEventListener('click', hideDeleteDialog);
+            document.getElementById('confirmDelete').addEventListener('click', deletePhoto);
+            
+            // Chiudi dialog cliccando sull'overlay
+            document.getElementById('deleteDialog').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    hideDeleteDialog();
                 }
             });
+            
+            // Adatta l'altezza della galleria per il mobile
+            function adjustGalleryHeight() {
+                const footer = document.querySelector('.footer');
+                const gallery = document.querySelector('.gallery');
+                if (footer && gallery) {
+                    gallery.style.marginBottom = `${footer.offsetHeight + 10}px`;
+                }
+            }
+            
+            window.addEventListener('load', adjustGalleryHeight);
+            window.addEventListener('resize', adjustGalleryHeight);
         </script>
     </body>
     </html>
     """
     
     return HTMLResponse(content=gallery_html)
+
+@app.delete("/delete/{filename}")
+async def delete_file(filename: str):
+    try:
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            return {"status": "success", "message": "File deleted"}
+        else:
+            raise HTTPException(status_code=404, detail="File not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
