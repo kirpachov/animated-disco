@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  file-upload:
+    build: .
+    ports:
+      - "80:80"
+    volumes:
+      - ./app/uploads:/app/uploads
+    environment:
+      - UVICORN_WORKERS=4
+      - UVICORN_LIMIT_MAX_REQUESTS=10000
+      - UVICORN_LIMIT_CONCURRENCY=1000
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
